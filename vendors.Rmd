@@ -1,0 +1,804 @@
+---
+title: "Mouse vendors data analysis"
+output: html_document
+---
+
+```{r}
+library(ggtree)
+library(lmerTest)
+library(tidyverse)
+
+# Other packages used but not loaded into global namespace:
+# For loading data
+# - taxafmt (GitHub)
+# For taxonomic overview
+# - pheatbuilder (GitHub)
+# - ggsci
+# For alpha/beta diversity measures
+# - vegan
+# - abdiv (GitHub)
+# For distance matrix work
+# - usedist (GitHub)
+# - adonisplus (GitHub)
+# For plotting
+# - ggbeeswarm
+# For statistical tests
+# - broom
+# - broom.mixed
+# For supervised learning
+# - pROC
+# - MASS
+# - randomForest
+# - randomForestExplainer
+```
+
+## Colors
+
+```{r}
+vendor_colors <- c(
+  "Charles River" = "#484349",
+  "Envigo" = "#55778B",
+  "Jackson" = "#109648",
+  "Taconic" = "#F2A65A")
+sample_type_colors <- c(
+  "Feces" = "#484349",
+  "Cecal contents" = "#c6c2c7"
+)
+```
+
+## Data import
+
+### Metadata
+
+```{r}
+s <- read_tsv("vendors-data/vendor-samples.tsv") |>
+  select(
+    sample_id = `#SampleID`, sample_type = SampleType,
+    subject_id = Mouse_Number, vendor = Mouse_Source_Vendor) |>
+  mutate(sample_type = fct_recode(
+    sample_type,
+    "Feces" = "Stool",
+    "Cecal contents" = "Cecal Content")) |>
+  mutate(sample_type = fct_relevel(sample_type, "Feces")) |>
+  mutate(subject_id = paste("Mouse", subject_id)) |>
+  mutate(vendor = fct_recode(vendor, "Jackson" = "JAX")) |>
+  mutate(vendor_label = str_wrap(vendor, width = 7))
+```
+
+### Taxa counts
+
+```{r}
+cts <- read_tsv("vendors-data/feature-table.tsv", skip = 1) |>
+  rename(otu_id = `#OTU ID`) |>
+  pivot_longer(
+    -otu_id,
+    names_to = "sample_id",
+    values_to = "reads")
+
+taxa <- read_tsv("vendors-data/taxonomy.tsv") |>
+  select(otu_id = `Feature ID`, lineage = Taxon) |>
+  mutate(taxafmt::split_lineage(lineage)) |>
+  mutate(across(Kingdom:Species, taxafmt::remove_rank_prefix)) |>
+  mutate(Species = taxafmt::make_binomial_name(Genus, Species)) |>
+  mutate(assignment = taxafmt::format_taxa(pick(Kingdom:Genus))) |>
+
+  filter(!str_detect(Class, "Chloroplast")) |>
+  filter(!str_detect(Family, "mitochondria")) |>
+  filter(!is.na(Phylum))
+
+cts <- cts |>
+  filter(otu_id %in% taxa$otu_id)
+```
+
+```{r}
+props <- cts |>
+  group_by(sample_id) |>
+  mutate(prop = reads / sum(reads)) |>
+  ungroup() |>
+  left_join(taxa, join_by(otu_id)) |>
+  group_by(sample_id, assignment) |>
+  summarise(prop = sum(prop), .groups = "drop")
+```
+
+### Alpha diversity
+
+```{r}
+faith_pd <- read_tsv("vendors-data/alpha-diversity-faithpd.tsv") |>
+  rename(sample_id = 1)
+```
+
+```{r warning=FALSE}
+adiv <- cts |>
+  group_by(sample_id) |>
+  summarise(
+    shannon = abdiv::shannon(reads),
+    simpson = abdiv::simpson(reads),
+    richness = vegan::rarefy(reads, 1000)) |>
+  left_join(faith_pd, join_by(sample_id))
+```
+
+### Beta diversity
+
+```{r}
+wu <- read_tsv("vendors-data/distance-matrix-wu.tsv") |>
+  rename(sample_id = 1) |>
+  as.data.frame() |>
+  column_to_rownames("sample_id") |>
+  as.matrix() |>
+  as.dist()
+```
+
+```{r}
+uu <- read_tsv("vendors-data/distance-matrix-uu.tsv") |>
+  rename(sample_id = 1) |>
+  as.data.frame() |>
+  column_to_rownames("sample_id") |>
+  as.matrix() |>
+  as.dist()
+```
+
+```{r}
+bc <- cts |>
+  usedist::pivot_to_matrix(sample_id, otu_id, reads) |>
+  vegan::vegdist()
+  # or usedist::dist_make(abdiv::bray_curtis)
+```
+
+```{r}
+jacc <- cts |>
+  usedist::pivot_to_matrix(sample_id, otu_id, reads) |>
+  vegan::vegdist(method = "jaccard", binary = TRUE)
+  # or usedist::dist_make(abdiv::jaccard)
+```
+
+## Taxonomic overview
+
+### Heatmap
+
+```{r fig.width=10, fig.height=5}
+s_annotation <- s |>
+  select(sample_id, vendor, sample_type) |>
+  arrange(vendor, sample_type)
+props |>
+  group_by(assignment) |>
+  filter(mean(prop) > 0.001) |>
+  pivot_wider(names_from = sample_id, values_from = prop, values_fill = 0) |>
+  select(assignment, all_of(s_annotation$sample_id)) |>
+  pheatbuilder::pheat() |>
+  pheatbuilder::pheat_annotate_cols(s_annotation) |>
+  pheatbuilder::pheat_display_cols(gaps = c(8, 16, 24, 32)) |>
+  pheatbuilder::pheat_color_saturated(saturation_limit = 0.6) |>
+  pheatbuilder::pheat_annotation_color(
+    vendor = vendor_colors, sample_type = sample_type_colors)
+```
+
+### Stacked bars
+
+```{r fig.width=8, fig.height=5}
+top_assignments <- props |>
+  group_by(assignment) |>
+  summarise(mean_prop = mean(prop), .groups = "drop") |>
+  filter(mean_prop > 0.02)
+
+props |>
+  mutate(assignment = if_else(
+    assignment %in% top_assignments$assignment, assignment, NA_character_)) |>
+  mutate(assignment = fct_explicit_na(assignment, "Other")) |>
+  group_by(sample_id, assignment) |>
+  summarise(prop = sum(prop), .groups = "drop") |>
+  left_join(s, join_by(sample_id)) |>
+  ggplot(aes(x = subject_id, y = prop, fill = assignment)) +
+  geom_col() +
+  facet_grid(sample_type ~ vendor, scales = "free_x") +
+  ggsci::scale_fill_frontiers() +
+  scale_y_continuous(labels = scales::percent) +
+  labs(x = "", y = "Relative abundance", fill = "") +
+  theme_bw() +
+  theme(axis.text.x = element_blank())
+```
+
+## Alpha diversity
+
+The abundance of species in a sample can be summarized by a rank-abundance plot.
+
+```{r}
+cts |>
+  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
+  mutate(otu_rank = rank(-reads, ties.method = "first")) |>
+  ggplot(aes(y = reads, x = otu_rank)) +
+  geom_point() +
+  scale_y_log10() +
+  labs(y = "Number of reads", x = "OTUs ranked by abundance") +
+  theme_bw()
+```
+
+### Richness
+
+```{r}
+cts |>
+  filter(sample_id %in% "CR.20.Stool.Day0") |>
+  group_by(sample_id) |>
+  summarise(total_reads = sum(reads), richness = abdiv::richness(reads))
+```
+
+The number of species depends strongly on the sampling depth.
+
+```{r warning=FALSE}
+cts |>
+  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
+  crossing(sampling_depth = seq(100, 5000, 100), replicate = 1:10) |>
+  group_by(sample_id, sampling_depth, replicate) |>
+  mutate(
+    subsampled_reads = as.integer(vegan::rrarefy(reads, sampling_depth[1]))) |>
+  summarise(
+    alpha_diversity = abdiv::richness(subsampled_reads),
+    .groups = "drop") |>
+  ggplot(aes(x = sampling_depth, y = alpha_diversity)) +
+  geom_point() +
+  geom_smooth() +
+  theme_bw()
+```
+
+```{r warning=FALSE}
+cts |>
+  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
+  crossing(sampling_depth = seq(100, 5000, 100)) |>
+  group_by(sample_id, sampling_depth) |>
+  summarise(
+    richness_hurlbert = vegan::rarefy(reads, sampling_depth[1]),
+    .groups = "drop") |>
+  ggplot(aes(x = sampling_depth, y = richness_hurlbert)) +
+  geom_line() +
+  theme_bw()
+```
+
+### Shannon diversity
+
+```{r}
+abdiv::shannon(c(0.2, 0.2, 0.2, 0.2, 0.2))
+log(5)
+```
+
+```{r}
+abdiv::shannon(c(0.96, 0.01, 0.01, 0.01, 0.01))
+abdiv::shannon(c(1, 0, 0, 0, 0))
+```
+
+```{r}
+tibble(n_eff = 1:50) |>
+  group_by(n_eff) |>
+  summarise(h = abdiv::shannon(rep(1 / n_eff, n_eff))) |>
+  ggplot(aes(x = n_eff, y = h)) +
+  geom_function(fun = log) +
+  geom_point() +
+  labs(x = "Effective species number", y = "Shannon diversity") +
+  theme_bw()
+```
+
+### Simpson diversity
+
+```{r}
+abdiv::dominance(c(0.5, 0.5))
+abdiv::dominance(c(0.9, 0.1))
+abdiv::dominance(c(0.99, 0.01))
+```
+
+
+```{r}
+tibble(dominance_ratio = 1:50) |>
+  group_by(dominance_ratio) |>
+  summarise(d = abdiv::dominance(c(dominance_ratio, rep(1, 9)))) |>
+  ggplot(aes(x = dominance_ratio, y = d)) +
+  geom_point() +
+  scale_x_log10() +
+  labs(
+    x = "Ratio of single dominant species\nvs. all others in 10-member community",
+    y = expression("Dominance index"~sum(p[i]^2, , ))) +
+  theme_bw()
+```
+
+### Faith's phylogenetic diversity
+
+```{r}
+ggtree::ggtree(abdiv::faith_tree, ladderize = F) +
+  ggtree::geom_tiplab()
+```
+
+If all the species are present, the value of Faith’s phylogenetic diversity (PD) is the sum of the branch lengths. Here, we expect the total branch length to be 5 + 4 + 2 + 4 + 1 + 20 + 5 + 1 + 3 = 45, adding from top to bottom.
+
+```{r}
+abdiv::faith_pd(c(1, 1, 1, 1, 1), abdiv::faith_tree)
+```
+
+### Plot
+
+```{r}
+s |>
+  left_join(adiv, join_by(sample_id)) |>
+  ggplot(aes(x = vendor, y = shannon, shape = sample_type)) +
+  ggbeeswarm::geom_quasirandom() +
+  scale_shape_manual(values = c(19, 1)) +
+  theme_bw()
+```
+
+```{r}
+s |>
+  left_join(adiv, join_by(sample_id)) |>
+  ggplot(aes(x = vendor_label, y = shannon, color = vendor)) +
+  geom_boxplot(outlier.shape = NA) +
+  ggbeeswarm::geom_quasirandom(aes(shape = sample_type)) +
+  scale_color_manual(values = vendor_colors, guide = "none") +
+  scale_shape_manual(values = c(19, 1)) +
+  scale_y_continuous(limits = c(0, 4.5)) +
+  labs(x = "Vendor", y = "Shannon diversity", shape = "") +
+  theme_bw()
+ggsave("figures/shannon_diversity.pdf", width = 4, height = 2.6, useDingbats = F)
+```
+
+### Test
+
+Simple linear model, two-group comparison
+
+```{r}
+s |>
+  filter(vendor %in% c("Envigo", "Jackson"), sample_type %in% "Feces") |>
+  left_join(adiv, join_by(sample_id)) |>
+  lm(shannon ~ vendor, data = _) |>
+  summary()
+```
+
+Equivalent to a t-test
+
+```{r}
+s |>
+  filter(vendor %in% c("Envigo", "Jackson"), sample_type %in% "Feces") |>
+  left_join(adiv, join_by(sample_id)) |>
+  t.test(shannon ~ vendor, data = _, var.equal = TRUE)
+```
+
+Linear model to compare multiple groups against a reference group
+
+```{r}
+s |>
+  filter(sample_type %in% "Feces") |>
+  left_join(adiv, join_by(sample_id)) |>
+  lm(shannon ~ vendor, data = _) |>
+  summary()
+```
+
+Mixed-effects model to compare repeated measurements from the same mouse
+
+```{r}
+s |>
+  filter(vendor %in% c("Envigo", "Jackson")) |>
+  left_join(adiv, join_by(sample_id)) |>
+  lmer(shannon ~ vendor * sample_type + (1|subject_id), data = _) |>
+  summary()
+```
+
+## Beta diversity
+
+The ecological motivation for beta diversity arises from alpha diversity.
+
+Whittaker's beta diversity is a conversion factor between the average number of species and the total species in two samples, αβ = γ or β = γ/α
+
+"Beta diversity quantifies how many subunits there would be if the total species diversity of the dataset and the mean species diversity per subunit remained the same, but the subunits shared no species."
+
+```{r}
+whittaker <- function (x, y) {
+  gamma <- abdiv::richness(x + y)
+  alpha_x <- abdiv::richness(x)
+  alpha_y <- abdiv::richness(y)
+  alpha <- mean(c(alpha_x, alpha_y))
+  gamma / alpha
+}
+whittaker(
+  c(1, 1, 1, 0, 0),
+  c(0, 0, 1, 1, 1))
+5 / 3
+```
+
+### Jaccard and Sorenson distance
+
+```{r}
+abdiv::jaccard(
+  c(1, 1, 1, 1, 0),
+  c(0, 0, 1, 1, 1))
+3 / 5
+```
+
+```{r}
+abdiv::sorenson(
+  c(1, 1, 1, 1, 0),
+  c(0, 0, 1, 1, 1))
+3 / 7
+# whittaker = sorensen + 1
+5 / mean(c(4, 3))
+```
+
+### Bray-Curtis distance
+
+```{r}
+abdiv::bray_curtis(
+  c(0.4, 0.3, 0.1, 0.2),
+  c(0.3, 0.5, 0.0, 0.2))
+0.4 / 2
+```
+
+### Euclidean and Aitchison distance
+
+```{r}
+euclidean_prop <- function (x, y) {
+  x <- x / sum(x)
+  y <- y / sum(y)
+  abdiv::euclidean(x, y)
+}
+aitchison <- function (x, y) {
+  x <- x / sum(x)
+  y <- y / sum(y)
+  x <- log(x) - mean(log(x))
+  y <- log(y) - mean(log(y))
+  abdiv::euclidean(x, y)
+}
+tibble(x_2 = 10^seq(1, 6, by = 0.2)) |>
+  group_by(x_2) |>
+  summarise(
+    euclidean = euclidean_prop(c(1000, x_2), c(1000, 1000)),
+    aitchison = aitchison(c(1000, x_2), c(1000, 1000))) |>
+  pivot_longer(!x_2, names_to = "measure", values_to = "distance") |>
+  ggplot(aes(x = x_2, y = distance, color = measure)) +
+  geom_point() +
+  geom_hline(yintercept = sqrt(2) / 2, linetype = "dashed") +
+  scale_x_log10() +
+  theme_bw()
+```
+
+### UniFrac distance
+
+```{r}
+ggtree(abdiv::lozupone_tree, ladderize = F) %<+%
+  abdiv::lozupone_panel_a +
+  geom_tippoint(aes(shape=SampleID), x=2.6, size=3) +
+  scale_shape_manual(values = c(1, 15)) +
+  scale_x_continuous(limits=c(0, 2.8))
+```
+
+```{r}
+abdiv::lozupone_panel_a |>
+  usedist::pivot_to_matrix(SampleID, Species, Counts) |>
+  usedist::dist_make(abdiv::unweighted_unifrac, abdiv::lozupone_tree)
+```
+
+### Plot
+
+```{r}
+s |>
+  adonisplus::pcoaplus(uu, sample_id_var = sample_id) |>
+  plot(color = vendor, shape = sample_type) +
+  facet_grid(~ sample_type) +
+  scale_shape_manual(values = c(19, 1)) +
+  scale_color_manual(values = vendor_colors) +
+  theme_bw()
+```
+
+### Test
+
+```{r}
+s |>
+  adonisplus::adonisplus(
+    jacc, distmat ~ vendor * sample_type, 
+    rep_meas_var = subject_id, sample_id_var = sample_id,
+    shuffle = c(sample_type = "within", vendor = "between"))
+```
+
+```{r}
+s |>
+  filter(sample_type %in% "Feces") |>
+  adonisplus::adonispost(
+    jacc, distmat ~ vendor, which = vendor,
+    sample_id_var = sample_id, permutations = 999)
+```
+
+```{r}
+2 / choose(8, 4)
+```
+
+## Taxonomic abundance
+
+### Compositional data analysis
+
+```{r}
+cts_composition <- tibble(abundance_a = c(1, 3, 5, 10, 20)) |>
+  group_by(abundance_a) |>
+  reframe(
+    sample_id = paste("a =", abundance_a),
+    taxon = letters[1:5],
+    abundance = c(abundance_a, 2, 3, 4, 5),
+    prop = abundance / sum(abundance)) |>
+  mutate(sample_id = fct_reorder(sample_id, abundance_a))
+cts_composition |>
+  ggplot(aes(x = sample_id, y = prop, fill = taxon)) +
+  geom_col() +
+  theme_bw()  
+```
+
+```{r}
+cts_composition |>
+  filter(taxon %in% "b") |>
+  lm(prop ~ abundance_a, data = _) |>
+  summary()
+```
+
+```{r}
+cts_composition |>
+  group_by(sample_id) |>
+  mutate(alr = log(prop / prop[5])) |> # alr = log(prop) - log(prop[5])
+  usedist::pivot_to_matrix(sample_id, taxon, alr)
+log(20 / 5)
+```
+
+```{r}
+cts_composition |>
+  group_by(sample_id) |>
+  mutate(clr = log(prop) - mean(log(prop))) |> # clr = log(prop / gmean(prop))
+  usedist::pivot_to_matrix(sample_id, taxon, clr)
+log(20) - mean(log(c(20, 2, 3, 4, 5)))
+```
+
+```{r}
+cts_composition |>
+  group_by(sample_id) |>
+  summarise(mean_log = mean(log(prop)))
+```
+
+### Log transformation
+
+```{r}
+cts_composition |>
+  group_by(sample_id) |>
+  mutate(logprop = log10(prop)) |>
+  usedist::pivot_to_matrix(sample_id, taxon, logprop)
+log10(20 / 34)
+```
+
+### Plot
+
+```{r}
+props_toTest <- props |>
+  group_by(assignment) |>
+  filter(mean(prop) > 0.01) |>
+  ungroup()
+```
+
+```{r}
+props_toTest |>
+  left_join(s, join_by(sample_id)) |>
+  mutate(prop = prop + 1e-6) |>
+  mutate(assignment = str_replace(assignment, " - ", "\n")) |>
+  mutate(assignment = str_replace(assignment, "unclassified", "uncl.")) |>
+  ggplot(aes(x = vendor, y = prop, shape = sample_type)) +
+  ggbeeswarm::geom_quasirandom() +
+  facet_wrap(~ assignment, scales = "free_y") +
+  scale_y_log10() +
+  scale_shape_manual(values = c(19, 1)) +
+  labs(x = "", y = "Relative abundance") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5))
+```
+
+### Test
+
+```{r}
+props_toTest |>
+  left_join(s, join_by(sample_id)) |>
+  filter(sample_type %in% "Feces") |>
+  mutate(logprop = log10(prop + 1e-6)) |>
+  nest_by(assignment) |>
+  reframe(broom::tidy(lm(logprop ~ vendor, data = data))) |>
+  filter(!(term %in% "(Intercept)")) |>
+  group_by(term) |>
+  mutate(fdr = p.adjust(p.value, method = "fdr")) |>
+  mutate(sig = cut(fdr, c(-Inf, 0.001, 0.01, 0.05, Inf), c("***", "**", "*", "")))
+```
+
+```{r}
+props_toTest |>
+  left_join(s, join_by(sample_id)) |>
+  filter(sample_type %in% "Feces") |>
+  mutate(vendor = fct_relevel(vendor, "Jackson")) |> ### Compare to Jackson
+  mutate(logprop = log10(prop + 1e-6)) |>
+  nest_by(assignment) |>
+  reframe(broom::tidy(lm(logprop ~ vendor, data = data))) |>
+  filter(!(term %in% "(Intercept)")) |>
+  group_by(term) |>
+  mutate(fdr = p.adjust(p.value, method = "fdr")) |>
+  mutate(sig = cut(fdr, c(-Inf, 0.001, 0.01, 0.05, Inf), c("***", "**", "*", "")))
+```
+
+```{r}
+props_toTest |>
+  left_join(s, join_by(sample_id)) |>
+  mutate(logprop = log10(prop + 1e-6)) |>
+  nest_by(assignment) |>
+  reframe(broom.mixed::tidy(
+    lmer(logprop ~ vendor * sample_type + (1|subject_id), data = data))) |>
+  filter(!(term %in% "(Intercept)")) |>
+  filter(effect %in% "fixed") |>
+  select(-effect, -group, -df) |>
+  group_by(term) |>
+  mutate(fdr = p.adjust(p.value, method = "fdr")) |>
+  mutate(sig = cut(fdr, c(-Inf, 0.001, 0.01, 0.05, Inf), c("***", "**", "*", "")))
+```
+
+## Supervised learning
+
+```{r}
+props_wide <- props |>
+  left_join(s, join_by(sample_id)) |>
+  filter(vendor %in% c("Charles River", "Envigo")) |>
+  mutate(vendor = fct_drop(vendor)) |>
+  group_by(assignment) |>
+  filter(mean(prop > 0) > 0.5) |>
+  ungroup() |>
+  mutate(assignment = fct_reorder(assignment, desc(prop))) |>
+  pivot_wider(
+    id_cols = c(sample_id, vendor), 
+    names_from = assignment, values_from = prop)
+```
+
+### Logistic recgression
+
+```{r}
+logistic_taxa <- c(
+  "Bacteroidetes - unclassified Rikenellaceae",
+  "Firmicutes - Oscillospira")
+```
+
+
+```{r}
+logistic_model <- props_wide |>
+  select(vendor, all_of(logistic_taxa)) |>
+  glm(vendor ~ ., family = "binomial", data = _)
+logistic_model |>
+  summary()
+```
+
+```{r}
+predict(logistic_model)
+logistic_vendor <- factor(
+  predict(logistic_model) > 0,
+  labels = c("Charles River", "Envigo"))
+logistic_vendor
+```
+
+```{r}
+table(Actual = props_wide$vendor, Predicted = logistic_vendor)
+7 / 8 # True positive rate
+1 / 8 # False positive rate
+```
+
+```{r}
+logistic_confusion <- function (threshold) {
+  actual <- props_wide$vendor %in% "Envigo"
+  predicted <- predict(logistic_model) > threshold
+  tibble(
+    tpr = sum(predicted & actual) / sum(actual),
+    fpr = sum(predicted & (!actual)) / sum(!actual))
+}
+logistic_roc_data <- tibble(threshold = seq(-20, 5, 0.5)) |>
+  group_by(threshold) |>
+  reframe(logistic_confusion(threshold))
+```
+
+```{r}
+logistic_roc_data |>
+  pivot_longer(-threshold) |>
+  ggplot(aes(x = threshold, y = value, color = name)) +
+  geom_step()
+```
+
+```{r}
+logistic_roc_data |>
+  arrange(tpr, fpr) |>
+  ggplot(aes(x = fpr, y = tpr)) +
+  geom_step() +
+  coord_equal() +
+  scale_x_continuous(limits = c(0, 1)) +
+  theme_bw()
+```
+
+```{r}
+logistic_roc <- pROC::roc(
+  props_wide$vendor %in% "Envigo",
+  predict(logistic_model))
+pROC::auc(logistic_roc)
+62 / 64
+```
+
+```{r}
+pROC::ggroc(logistic_roc) +
+  coord_equal() +
+  theme_bw()
+```
+
+### Linear discriminant analysis (LDA)
+
+```{r}
+lda_taxa <- c(
+  "Bacteroidetes - unclassified Rikenellaceae",
+  "Firmicutes - Oscillospira",
+  "Firmicutes - unclassified Ruminococcaceae",
+  "Verrucomicrobia - Akkermansia")
+```
+
+
+```{r}
+lda_model <- props_wide |>
+  select(-sample_id) |>
+  select(vendor, all_of(lda_taxa)) |>
+  MASS::lda(vendor ~ ., data = _)
+```
+
+```{r}
+predict(lda_model)
+lda_values <- predict(lda_model)$x |>
+  as.data.frame() |>
+  mutate(sample_id = props_wide$sample_id)
+```
+
+```{r}
+table(Actual = props_wide$vendor, Predicted = predict(lda_model)$class)
+```
+
+```{r}
+props_wide |>
+  bind_cols(predict(lda_model)$x) |>
+  ggplot(aes(x = LD1, y = sample_id, color = vendor)) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw()
+```
+
+```{r}
+lda_roc <- pROC::roc(
+  props_wide$vendor %in% "Envigo",
+  predict(lda_model)$x[,1])
+pROC::auc(lda_roc)
+plot(lda_roc)
+```
+
+```{r}
+lda_model$scaling |>
+  as.data.frame() |>
+  rownames_to_column("assignment") |>
+  mutate(assignment = fct_reorder(assignment, LD1)) |>
+  ggplot(aes(x = LD1, y = assignment)) +
+  geom_point() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  theme_bw()
+```
+
+### Random forests
+
+```{r}
+rforest_predictors <- props_wide |>
+  select(-sample_id, -vendor)
+rforest_response <- props_wide$vendor
+rforest_model <- randomForest::randomForest(
+  x = rforest_predictors, y = rforest_response)
+rforest_model
+```
+
+```{r}
+predict(rforest_model)
+```
+
+
+```{r}
+randomForest::varImpPlot(rforest_model)
+```
+
+```{r}
+randomForestExplainer::plot_min_depth_distribution(rforest_model)
+```
+
