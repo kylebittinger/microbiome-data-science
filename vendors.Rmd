@@ -199,127 +199,7 @@ props |>
 
 ## Alpha diversity
 
-The abundance of species in a sample can be summarized by a rank-abundance plot.
-
-```{r}
-cts |>
-  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
-  mutate(otu_rank = rank(-reads, ties.method = "first")) |>
-  ggplot(aes(y = reads, x = otu_rank)) +
-  geom_point() +
-  scale_y_log10() +
-  labs(y = "Number of reads", x = "OTUs ranked by abundance") +
-  theme_bw()
-```
-
-### Richness
-
-```{r}
-cts |>
-  filter(sample_id %in% "CR.20.Stool.Day0") |>
-  group_by(sample_id) |>
-  summarise(total_reads = sum(reads), richness = abdiv::richness(reads))
-```
-
-The number of species depends strongly on the sampling depth.
-
-```{r warning=FALSE}
-cts |>
-  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
-  crossing(sampling_depth = seq(100, 5000, 100), replicate = 1:10) |>
-  group_by(sample_id, sampling_depth, replicate) |>
-  mutate(
-    subsampled_reads = as.integer(vegan::rrarefy(reads, sampling_depth[1]))) |>
-  summarise(
-    alpha_diversity = abdiv::richness(subsampled_reads),
-    .groups = "drop") |>
-  ggplot(aes(x = sampling_depth, y = alpha_diversity)) +
-  geom_point() +
-  geom_smooth() +
-  theme_bw()
-```
-
-```{r warning=FALSE}
-cts |>
-  filter(sample_id %in% "CR.20.Stool.Day0", reads > 0) |>
-  crossing(sampling_depth = seq(100, 5000, 100)) |>
-  group_by(sample_id, sampling_depth) |>
-  summarise(
-    richness_hurlbert = vegan::rarefy(reads, sampling_depth[1]),
-    .groups = "drop") |>
-  ggplot(aes(x = sampling_depth, y = richness_hurlbert)) +
-  geom_line() +
-  theme_bw()
-```
-
-### Shannon diversity
-
-```{r}
-abdiv::shannon(c(0.2, 0.2, 0.2, 0.2, 0.2))
-log(5)
-```
-
-```{r}
-abdiv::shannon(c(0.96, 0.01, 0.01, 0.01, 0.01))
-abdiv::shannon(c(1, 0, 0, 0, 0))
-```
-
-```{r}
-tibble(n_eff = 1:50) |>
-  group_by(n_eff) |>
-  summarise(h = abdiv::shannon(rep(1 / n_eff, n_eff))) |>
-  ggplot(aes(x = n_eff, y = h)) +
-  geom_function(fun = log) +
-  geom_point() +
-  labs(x = "Effective species number", y = "Shannon diversity") +
-  theme_bw()
-```
-
-### Simpson diversity
-
-```{r}
-abdiv::dominance(c(0.5, 0.5))
-abdiv::dominance(c(0.9, 0.1))
-abdiv::dominance(c(0.99, 0.01))
-```
-
-
-```{r}
-tibble(dominance_ratio = 1:50) |>
-  group_by(dominance_ratio) |>
-  summarise(d = abdiv::dominance(c(dominance_ratio, rep(1, 9)))) |>
-  ggplot(aes(x = dominance_ratio, y = d)) +
-  geom_point() +
-  scale_x_log10() +
-  labs(
-    x = "Ratio of single dominant species\nvs. all others in 10-member community",
-    y = expression("Dominance index"~sum(p[i]^2, , ))) +
-  theme_bw()
-```
-
-### Faith's phylogenetic diversity
-
-```{r}
-ggtree::ggtree(abdiv::faith_tree, ladderize = F) +
-  ggtree::geom_tiplab()
-```
-
-If all the species are present, the value of Faith’s phylogenetic diversity (PD) is the sum of the branch lengths. Here, we expect the total branch length to be 5 + 4 + 2 + 4 + 1 + 20 + 5 + 1 + 3 = 45, adding from top to bottom.
-
-```{r}
-abdiv::faith_pd(c(1, 1, 1, 1, 1), abdiv::faith_tree)
-```
-
 ### Plot
-
-```{r}
-s |>
-  left_join(adiv, join_by(sample_id)) |>
-  ggplot(aes(x = vendor, y = shannon, shape = sample_type)) +
-  ggbeeswarm::geom_quasirandom() +
-  scale_shape_manual(values = c(19, 1)) +
-  theme_bw()
-```
 
 ```{r}
 s |>
@@ -378,97 +258,6 @@ s |>
 
 ## Beta diversity
 
-The ecological motivation for beta diversity arises from alpha diversity.
-
-Whittaker's beta diversity is a conversion factor between the average number of species and the total species in two samples, αβ = γ or β = γ/α
-
-"Beta diversity quantifies how many subunits there would be if the total species diversity of the dataset and the mean species diversity per subunit remained the same, but the subunits shared no species."
-
-```{r}
-whittaker <- function (x, y) {
-  gamma <- abdiv::richness(x + y)
-  alpha_x <- abdiv::richness(x)
-  alpha_y <- abdiv::richness(y)
-  alpha <- mean(c(alpha_x, alpha_y))
-  gamma / alpha
-}
-whittaker(
-  c(1, 1, 1, 0, 0),
-  c(0, 0, 1, 1, 1))
-5 / 3
-```
-
-### Jaccard and Sorenson distance
-
-```{r}
-abdiv::jaccard(
-  c(1, 1, 1, 1, 0),
-  c(0, 0, 1, 1, 1))
-3 / 5
-```
-
-```{r}
-abdiv::sorenson(
-  c(1, 1, 1, 1, 0),
-  c(0, 0, 1, 1, 1))
-3 / 7
-# whittaker = sorensen + 1
-5 / mean(c(4, 3))
-```
-
-### Bray-Curtis distance
-
-```{r}
-abdiv::bray_curtis(
-  c(0.4, 0.3, 0.1, 0.2),
-  c(0.3, 0.5, 0.0, 0.2))
-0.4 / 2
-```
-
-### Euclidean and Aitchison distance
-
-```{r}
-euclidean_prop <- function (x, y) {
-  x <- x / sum(x)
-  y <- y / sum(y)
-  abdiv::euclidean(x, y)
-}
-aitchison <- function (x, y) {
-  x <- x / sum(x)
-  y <- y / sum(y)
-  x <- log(x) - mean(log(x))
-  y <- log(y) - mean(log(y))
-  abdiv::euclidean(x, y)
-}
-tibble(x_2 = 10^seq(1, 6, by = 0.2)) |>
-  group_by(x_2) |>
-  summarise(
-    euclidean = euclidean_prop(c(1000, x_2), c(1000, 1000)),
-    aitchison = aitchison(c(1000, x_2), c(1000, 1000))) |>
-  pivot_longer(!x_2, names_to = "measure", values_to = "distance") |>
-  ggplot(aes(x = x_2, y = distance, color = measure)) +
-  geom_point() +
-  geom_hline(yintercept = sqrt(2) / 2, linetype = "dashed") +
-  scale_x_log10() +
-  theme_bw()
-```
-
-### UniFrac distance
-
-```{r}
-ggtree(abdiv::lozupone_tree, ladderize = F) %<+%
-  abdiv::lozupone_panel_a +
-  geom_tippoint(aes(shape=SampleID), x=2.6, size=3) +
-  scale_shape_manual(values = c(1, 15)) +
-  scale_x_continuous(limits=c(0, 2.8))
-```
-
-```{r}
-abdiv::lozupone_panel_a |>
-  usedist::pivot_to_matrix(SampleID, Species, Counts) |>
-  usedist::dist_make(abdiv::unweighted_unifrac, abdiv::lozupone_tree)
-```
-
 ### Plot
 
 ```{r}
@@ -504,62 +293,6 @@ s |>
 ```
 
 ## Taxonomic abundance
-
-### Compositional data analysis
-
-```{r}
-cts_composition <- tibble(abundance_a = c(1, 3, 5, 10, 20)) |>
-  group_by(abundance_a) |>
-  reframe(
-    sample_id = paste("a =", abundance_a),
-    taxon = letters[1:5],
-    abundance = c(abundance_a, 2, 3, 4, 5),
-    prop = abundance / sum(abundance)) |>
-  mutate(sample_id = fct_reorder(sample_id, abundance_a))
-cts_composition |>
-  ggplot(aes(x = sample_id, y = prop, fill = taxon)) +
-  geom_col() +
-  theme_bw()  
-```
-
-```{r}
-cts_composition |>
-  filter(taxon %in% "b") |>
-  lm(prop ~ abundance_a, data = _) |>
-  summary()
-```
-
-```{r}
-cts_composition |>
-  group_by(sample_id) |>
-  mutate(alr = log(prop / prop[5])) |> # alr = log(prop) - log(prop[5])
-  usedist::pivot_to_matrix(sample_id, taxon, alr)
-log(20 / 5)
-```
-
-```{r}
-cts_composition |>
-  group_by(sample_id) |>
-  mutate(clr = log(prop) - mean(log(prop))) |> # clr = log(prop / gmean(prop))
-  usedist::pivot_to_matrix(sample_id, taxon, clr)
-log(20) - mean(log(c(20, 2, 3, 4, 5)))
-```
-
-```{r}
-cts_composition |>
-  group_by(sample_id) |>
-  summarise(mean_log = mean(log(prop)))
-```
-
-### Log transformation
-
-```{r}
-cts_composition |>
-  group_by(sample_id) |>
-  mutate(logprop = log10(prop)) |>
-  usedist::pivot_to_matrix(sample_id, taxon, logprop)
-log10(20 / 34)
-```
 
 ### Plot
 
@@ -620,11 +353,11 @@ props_toTest |>
   left_join(s, join_by(sample_id)) |>
   mutate(logprop = log10(prop + 1e-6)) |>
   nest_by(assignment) |>
-  reframe(broom.mixed::tidy(
-    lmer(logprop ~ vendor * sample_type + (1|subject_id), data = data))) |>
+  reframe(broom.mixed::tidy(lmerTest::lmer(
+    logprop ~ vendor * sample_type + (1|subject_id), data = data))) |>
   filter(!(term %in% "(Intercept)")) |>
   filter(effect %in% "fixed") |>
-  select(-effect, -group, -df) |>
+  select(-effect, -group, -statistic, -df) |>
   group_by(term) |>
   mutate(fdr = p.adjust(p.value, method = "fdr")) |>
   mutate(sig = cut(fdr, c(-Inf, 0.001, 0.01, 0.05, Inf), c("***", "**", "*", "")))
