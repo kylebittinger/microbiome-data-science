@@ -81,7 +81,6 @@ taxa <- read_tsv("vendors-data/taxonomy.tsv") |>
   mutate(across(Kingdom:Species, taxafmt::remove_rank_prefix)) |>
   mutate(Species = taxafmt::make_binomial_name(Genus, Species)) |>
   mutate(assignment = taxafmt::format_taxa(pick(Kingdom:Genus))) |>
-
   filter(!str_detect(Class, "Chloroplast")) |>
   filter(!str_detect(Family, "mitochondria")) |>
   filter(!is.na(Phylum))
