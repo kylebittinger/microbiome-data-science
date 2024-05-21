@@ -1,0 +1,59 @@
+---
+title: "Mouse vendors in-class"
+output: html_document
+date: "2024-05-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(tidyverse)
+```
+
+## Import data
+
+```{r}
+s <- read_tsv("vendors-data/vendor-samples.tsv") |>
+  rename(sample_id = `#SampleID`, subject_id = Mouse_Number) |>
+  mutate(subject_id = paste("Mouse", subject_id))
+```
+
+```{r}
+cts <- read_tsv("vendors-data/feature-table.tsv", skip = 1) |>
+  rename(taxon = `#OTU ID`) |>
+  pivot_longer(-taxon, names_to = "sample_id", values_to = "reads")
+```
+
+```{r}
+faith_pd <- read_tsv("vendors-data/alpha-diversity-faithpd.tsv") |>
+  rename(sample_id = `...1`)
+```
+
+```{r}
+adiv <- cts |>
+  group_by(sample_id) |>
+  summarise(
+    richness = abdiv::richness(reads),
+    shannon = abdiv::shannon(reads),
+    simpson = abdiv::simpson(reads)
+  )
+```
+
+## Alpha diversity analysis
+
+```{r}
+adiv |>
+  left_join(s, join_by(sample_id)) |>
+  ggplot(aes(x = Mouse_Source_Vendor, y = shannon, shape = SampleType)) +
+  ggbeeswarm::geom_quasirandom()
+```
+
+```{r}
+adiv |>
+  left_join(s, join_by(sample_id)) |>
+  lm(shannon ~ Mouse_Source_Vendor, data = _) |>
+  summary()
+```
+
