@@ -31,21 +31,45 @@ faith_pd <- read_tsv("vendors-data/alpha-diversity-faithpd.tsv") |>
   rename(sample_id = `...1`)
 ```
 
-```{r}
+```{r warning=FALSE}
 adiv <- cts |>
   group_by(sample_id) |>
   summarise(
-    richness = abdiv::richness(reads),
+    richness = vegan::rarefy(reads, 1000),
     shannon = abdiv::shannon(reads),
-    simpson = abdiv::simpson(reads)
+    simpson = abdiv::simpson(reads),
+    .groups = "drop"
   )
 ```
+
+```{r}
+uu <- read.table("vendors-data/distance-matrix-uu.tsv") |>
+  as.dist()
+```
+
+```{r}
+wu <- read.table("vendors-data/distance-matrix-wu.tsv") |>
+  as.dist()
+```
+
+```{r}
+bc <- cts |>
+  usedist::pivot_to_matrix(sample_id, taxon, reads) |>
+  vegan::vegdist(method = "bray")
+```
+
+```{r}
+jacc <- cts |>
+  usedist::pivot_to_matrix(sample_id, taxon, reads) |>
+  vegan::vegdist(method = "jaccard", binary = TRUE)
+```
+
 
 ## Alpha diversity analysis
 
 ```{r}
-adiv |>
-  left_join(s, join_by(sample_id)) |>
+s |>
+  left_join(adiv, join_by(sample_id)) |>
   ggplot(aes(x = Mouse_Source_Vendor, y = shannon, shape = SampleType)) +
   ggbeeswarm::geom_quasirandom()
 ```
@@ -55,5 +79,29 @@ adiv |>
   left_join(s, join_by(sample_id)) |>
   lm(shannon ~ Mouse_Source_Vendor, data = _) |>
   summary()
+```
+## Beta diversity
+
+```{r}
+s |>
+  adonisplus::pcoaplus(jacc, sample_id_var = sample_id) |>
+  plot(color = Mouse_Source_Vendor, shape = SampleType) +
+  theme_bw()
+```
+
+
+```{r}
+s |>
+  adonisplus::adonisplus(
+    bc, distmat ~ Mouse_Source_Vendor, sample_id_var = sample_id,
+    rep_meas_var = subject_id, shuffle = c(Mouse_Source_Vendor = "between"))
+```
+
+```{r}
+s |>
+  adonisplus::adonispost(
+    bc, distmat ~ Mouse_Source_Vendor, sample_id_var = sample_id,
+    rep_meas_var = subject_id, shuffle = c(Mouse_Source_Vendor = "between"),
+    which = Mouse_Source_Vendor)
 ```
 

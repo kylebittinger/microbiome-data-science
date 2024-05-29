@@ -119,35 +119,25 @@ adiv <- cts |>
 ### Beta diversity
 
 ```{r}
-wu <- read_tsv("vendors-data/distance-matrix-wu.tsv") |>
-  rename(sample_id = 1) |>
-  as.data.frame() |>
-  column_to_rownames("sample_id") |>
-  as.matrix() |>
+wu <- read.table("vendors-data/distance-matrix-wu.tsv") |>
   as.dist()
 ```
 
 ```{r}
-uu <- read_tsv("vendors-data/distance-matrix-uu.tsv") |>
-  rename(sample_id = 1) |>
-  as.data.frame() |>
-  column_to_rownames("sample_id") |>
-  as.matrix() |>
+uu <- read.table("vendors-data/distance-matrix-uu.tsv") |>
   as.dist()
 ```
 
 ```{r}
 bc <- cts |>
   usedist::pivot_to_matrix(sample_id, otu_id, reads) |>
-  vegan::vegdist()
-  # or usedist::dist_make(abdiv::bray_curtis)
+  vegan::vegdist(method = "bray")
 ```
 
 ```{r}
 jacc <- cts |>
   usedist::pivot_to_matrix(sample_id, otu_id, reads) |>
   vegan::vegdist(method = "jaccard", binary = TRUE)
-  # or usedist::dist_make(abdiv::jaccard)
 ```
 
 ## Taxonomic overview
