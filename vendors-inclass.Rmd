@@ -17,13 +17,24 @@ library(tidyverse)
 ```{r}
 s <- read_tsv("vendors-data/vendor-samples.tsv") |>
   rename(sample_id = `#SampleID`, subject_id = Mouse_Number) |>
-  mutate(subject_id = paste("Mouse", subject_id))
+  mutate(subject_id = paste("Mouse", subject_id)) |>
+  mutate(Mouse_Source_Vendor = fct_relevel(Mouse_Source_Vendor, "JAX", "Envigo"))
+
 ```
 
 ```{r}
 cts <- read_tsv("vendors-data/feature-table.tsv", skip = 1) |>
   rename(taxon = `#OTU ID`) |>
   pivot_longer(-taxon, names_to = "sample_id", values_to = "reads")
+```
+
+```{r}
+taxa <- read_tsv("vendors-data/taxonomy.tsv") |>
+  rename(taxon = `Feature ID`, lineage = Taxon) |>
+  mutate(taxafmt::split_lineage(lineage)) |>
+  mutate(across(Kingdom:Species, taxafmt::remove_rank_prefix)) |>
+  mutate(Species = taxafmt::make_binomial_name(Genus, Species)) |>
+  mutate(label = taxafmt::format_taxa(pick(Kingdom:Genus)))
 ```
 
 ```{r}
@@ -62,6 +73,32 @@ bc <- cts |>
 jacc <- cts |>
   usedist::pivot_to_matrix(sample_id, taxon, reads) |>
   vegan::vegdist(method = "jaccard", binary = TRUE)
+```
+
+```{r}
+props <- cts |>
+  left_join(taxa, join_by(taxon)) |>
+  group_by(sample_id) |>
+  mutate(prop = reads / sum(reads)) |>
+  ungroup() |>
+  group_by(sample_id, label) |>
+  summarise(prop = sum(prop), .groups = "drop")
+```
+
+## Taxonomic overview
+
+```{r}
+top_taxa <- props |>
+  group_by(label) |>
+  summarise(meanprop = mean(prop), .groups = "drop") |>
+  filter(meanprop > 0.01)
+```
+
+```{r}
+props |>
+  filter(label %in% top_taxa$label) |>
+  pivot_wider(names_from = sample_id, values_from = prop) |>
+  pheatbuilder::pheat()
 ```
 
 
@@ -103,5 +140,20 @@ s |>
     bc, distmat ~ Mouse_Source_Vendor, sample_id_var = sample_id,
     rep_meas_var = subject_id, shuffle = c(Mouse_Source_Vendor = "between"),
     which = Mouse_Source_Vendor)
+```
+
+## Taxonomic abundance
+
+```{r}
+props |>
+  filter(label %in% top_taxa$label) |>
+  mutate(logprop = log10(prop + 1e-4)) |>
+  left_join(s, join_by(sample_id)) |>
+  nest_by(label) |>
+  reframe(broom::tidy(lm(logprop ~ Mouse_Source_Vendor, data = data))) |>
+  group_by(term) |>
+  mutate(fdr = p.adjust(p.value, method = "fdr")) |>
+  filter(!(term %in% "(Intercept)")) |>
+  filter(fdr < 0.05)
 ```
 
