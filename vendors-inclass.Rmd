@@ -157,3 +157,51 @@ props |>
   filter(fdr < 0.05)
 ```
 
+## Supervised learning
+
+```{r}
+props_wide <- props |>
+  pivot_wider(names_from = "label", values_from = "prop")
+```
+
+
+```{r}
+s_learn <- s |>
+  filter(Mouse_Source_Vendor %in% c("JAX", "Taconic"))
+```
+
+
+```{r}
+props_learn <- props |>
+  left_join(s, join_by(sample_id)) |>
+  select(sample_id, Mouse_Source_Vendor, label, prop) |>
+  pivot_wider(names_from = "label", values_from = "prop") |>
+  filter(Mouse_Source_Vendor %in% c("JAX", "Taconic"))
+vendors_learn <- droplevels(props_learn$Mouse_Source_Vendor)
+props_learn <- props_learn |>
+  select(-Mouse_Source_Vendor) |>
+  column_to_rownames("sample_id")
+```
+
+```{r}
+# x is a data frame ONLY with the predictors
+#   it helps if the sample_id's are in the rownames here
+# y is a vector of the outcome variable, vendor in this example
+vendor_rf <- randomForest::randomForest(x = props_learn, y = vendors_learn)
+```
+
+```{r}
+vendor_rf
+```
+
+```{r}
+predict(vendor_rf)
+```
+
+```{r}
+randomForest::varImpPlot(vendor_rf)
+```
+
+```{r}
+randomForestExplainer::plot_min_depth_distribution(vendor_rf)
+```
